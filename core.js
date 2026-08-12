@@ -4,7 +4,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 2;
+    const CORE_VERSION = 3;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -295,7 +295,10 @@
         }
     };
 
-    // Duda/DOM Ready Helper
+    // DOM Ready Helper. Duda already executes custom-widget JavaScript from its
+    // own widget-loaded callback, so registering another dmAPI.runOnReady here
+    // can miss an event that has already fired and prevent the widget from ever
+    // starting. The widget markup is safe to use once the DOM itself is ready.
     const ready = (callback) => {
         let called = false;
         const runOnce = () => {
@@ -304,9 +307,7 @@
             callback();
         };
 
-        if (global.dmAPI && typeof global.dmAPI.runOnReady === "function") {
-            global.dmAPI.runOnReady(runOnce);
-        } else if (global.document.readyState === "loading") {
+        if (global.document.readyState === "loading") {
             global.document.addEventListener("DOMContentLoaded", runOnce, { once: true });
         } else {
             runOnce();
