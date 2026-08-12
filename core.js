@@ -1,10 +1,11 @@
 // Duda and AMP Widget Core Library
-// To be imported from https://fsm-web-dev.github.io/duda-core/core.js
+// Load once, synchronously, from Duda's global Head HTML:
+// <script data-categories="essential" src="https://fsm-web-dev.github.io/duda-core/core.js"></script>
 
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 3;
+    const CORE_VERSION = 4;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -314,6 +315,138 @@
         }
     };
 
+    // Third-party Dependency Loader
+    // Dependencies are registered centrally, loaded only when a widget needs
+    // them, and shared across every widget instance on the page.
+    const dependencyRegistry = {
+        dompurify: {
+            src: "https://unpkg.com/dompurify@3.2.4/dist/purify.min.js",
+            globalName: "DOMPurify",
+        },
+        micromodal: {
+            src: "https://unpkg.com/micromodal@0.4.10/dist/micromodal.min.js",
+            globalName: "MicroModal",
+        },
+        stripe: {
+            src: "https://js.stripe.com/v3/",
+            globalName: "Stripe",
+        },
+        swiper: {
+            src: "https://cdn.jsdelivr.net/npm/swiper@11.2.10/swiper-bundle.min.js",
+            globalName: "Swiper",
+            styles: ["https://cdn.jsdelivr.net/npm/swiper@11.2.10/swiper-bundle.min.css"],
+        },
+    };
+    const dependencyPromises = new Map();
+    const stylesheetPromises = new Map();
+
+    const loadStylesheet = (href, dependencyName) => {
+        if (stylesheetPromises.has(href)) return stylesheetPromises.get(href);
+
+        const existing = global.document.querySelector(`link[data-core-stylesheet="${dependencyName}"]`)
+            || global.document.querySelector(`link[href="${href}"]`);
+
+        const promise = new Promise((resolve, reject) => {
+            const link = existing || global.document.createElement("link");
+            const succeed = () => resolve(link);
+            const fail = () => reject(new Error(`[Core] Failed to load stylesheet for dependency "${dependencyName}": ${href}`));
+
+            if (existing) {
+                if (link.sheet) {
+                    succeed();
+                    return;
+                }
+                link.addEventListener("load", succeed, { once: true });
+                link.addEventListener("error", fail, { once: true });
+                return;
+            }
+
+            link.rel = "stylesheet";
+            link.href = href;
+            link.dataset.coreStylesheet = dependencyName;
+            link.addEventListener("load", succeed, { once: true });
+            link.addEventListener("error", fail, { once: true });
+            global.document.head.appendChild(link);
+        }).catch((error) => {
+            stylesheetPromises.delete(href);
+            throw error;
+        });
+
+        stylesheetPromises.set(href, promise);
+        return promise;
+    };
+
+    const loadDependency = (name) => {
+        const normalizedName = String(name || "").toLowerCase();
+        const definition = dependencyRegistry[normalizedName];
+
+        if (!definition) {
+            return Promise.reject(new Error(`[Core] Unknown dependency: "${name}"`));
+        }
+
+        if (global[definition.globalName]) {
+            return Promise.resolve(global[definition.globalName]);
+        }
+
+        if (dependencyPromises.has(normalizedName)) {
+            return dependencyPromises.get(normalizedName);
+        }
+
+        const promise = Promise.all((definition.styles || []).map((href) => {
+            return loadStylesheet(href, normalizedName);
+        })).then(() => new Promise((resolve, reject) => {
+            const existing = global.document.querySelector(`script[data-core-dependency="${normalizedName}"]`)
+                || global.document.querySelector(`script[src="${definition.src}"]`);
+            const script = existing || global.document.createElement("script");
+            const succeed = () => {
+                const dependency = global[definition.globalName];
+                if (!dependency) {
+                    reject(new Error(`[Core] Dependency "${normalizedName}" loaded without exposing ${definition.globalName}.`));
+                    return;
+                }
+                resolve(dependency);
+            };
+            const fail = () => reject(new Error(`[Core] Failed to load dependency "${normalizedName}": ${definition.src}`));
+
+            if (global[definition.globalName]) {
+                succeed();
+                return;
+            }
+
+            script.addEventListener("load", succeed, { once: true });
+            script.addEventListener("error", fail, { once: true });
+
+            if (!existing) {
+                script.src = definition.src;
+                script.async = true;
+                script.dataset.coreDependency = normalizedName;
+                script.dataset.categories = "essential";
+                global.document.head.appendChild(script);
+            }
+        })).catch((error) => {
+            dependencyPromises.delete(normalizedName);
+            throw error;
+        });
+
+        dependencyPromises.set(normalizedName, promise);
+        return promise;
+    };
+
+    const setLoading = (loaderElement, visible) => {
+        if (!loaderElement) return false;
+
+        loaderElement.classList.toggle("hidden", !visible);
+        loaderElement.setAttribute("aria-hidden", visible ? "false" : "true");
+
+        if (visible) {
+            loaderElement.style.removeProperty("display");
+        } else {
+            loaderElement.style.display = "none";
+        }
+
+        return true;
+    };
+
     const Core = {
         ...existingCore,
         createStore,
@@ -325,6 +458,12 @@
         // the new namespace.
         haversine: existingCore.haversine || haversineMiles,
         ready,
+        dependencies: {
+            load: loadDependency,
+        },
+        ui: {
+            setLoading,
+        },
         Storage: {
             local: createStorage(() => global.localStorage),
             session: createStorage(() => global.sessionStorage),
