@@ -5,7 +5,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 4;
+    const CORE_VERSION = 5;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -314,6 +314,63 @@
             runOnce();
         }
     };
+
+    // X-Frame-Bypass is kept here so iframe widgets do not need a separate
+    // script. Browsers without customized built-in support simply keep the
+    // normal iframe behavior.
+    const registerXFrameBypass = () => {
+        if (!global.customElements || typeof global.customElements.define !== "function"
+            || typeof global.HTMLIFrameElement !== "function"
+            || global.customElements.get("x-frame-bypass")) return;
+
+        try {
+            global.customElements.define("x-frame-bypass", class extends global.HTMLIFrameElement {
+                static get observedAttributes() {
+                    return ["src"];
+                }
+
+                attributeChangedCallback() {
+                    this.load(this.src);
+                }
+
+                connectedCallback() {
+                    this.sandbox = "" + this.sandbox || "allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts allow-top-navigation-by-user-activation";
+                }
+
+                load(url, options) {
+                    if (!url) return;
+                    if (!url.startsWith("http")) throw new Error(`X-Frame-Bypass src ${url} does not start with http(s)://`);
+
+                    this.srcdoc = `<!DOCTYPE html><html><head><style>.loader { position: absolute; top: calc(50% - 25px); left: calc(50% - 25px); width: 50px; height: 50px; background-color: #333; border-radius: 50%; animation: loader 1s infinite ease-in-out; } @keyframes loader { 0% { transform: scale(0); } 100% { transform: scale(1); opacity: 0; } }</style></head><body><div class="loader"></div></body></html>`;
+
+                    this.fetchProxy(url, options, 0).then((response) => response.text()).then((html) => {
+                        if (html) this.srcdoc = html.replace(/<head([^>]*)>/i, `<head$1><base href="${url}"><script>document.addEventListener('click', e => { if (frameElement && document.activeElement && document.activeElement.href) { e.preventDefault(); frameElement.load(document.activeElement.href); } }); document.addEventListener('submit', e => { if (frameElement && document.activeElement && document.activeElement.form && document.activeElement.form.action) { e.preventDefault(); if (document.activeElement.form.method === 'post') frameElement.load(document.activeElement.form.action, {method: 'post', body: new FormData(document.activeElement.form)}); else frameElement.load(document.activeElement.form.action + '?' + new URLSearchParams(new FormData(document.activeElement.form))); } });</script>`).replace(/ crossorigin=['"][^'"]*['"]/gi, "");
+                    }).catch((error) => console.error("Cannot load X-Frame-Bypass:", error));
+                }
+
+                fetchProxy(url, options, index) {
+                    const proxies = (options || {}).proxies || [
+                        "https://cors-proxy.maximo-ospital-8c9.workers.dev/?",
+                        "https://api.allorigins.win/raw?url=",
+                        "https://api.codetabs.com/v1/proxy/?quest=",
+                        "https://cors-anywhere.herokuapp.com/",
+                    ];
+                    const proxyUrl = proxies[index] + (index ? encodeURIComponent(url) : url);
+                    return global.fetch(proxyUrl, options).then((response) => {
+                        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+                        return response;
+                    }).catch((error) => {
+                        if (index === proxies.length - 1) throw error;
+                        return this.fetchProxy(url, options, index + 1);
+                    });
+                }
+            }, { extends: "iframe" });
+        } catch (error) {
+            console.warn("[Core] x-frame-bypass is unavailable:", error);
+        }
+    };
+
+    registerXFrameBypass();
 
     // Third-party Dependency Loader
     // Dependencies are registered centrally, loaded only when a widget needs
