@@ -380,6 +380,10 @@
             src: "https://unpkg.com/dompurify@3.2.4/dist/purify.min.js",
             globalName: "DOMPurify",
         },
+        preact: {
+            src: "https://unpkg.com/preact@10.26.4/dist/preact.umd.js",
+            globalName: "preact",
+        },
         micromodal: {
             src: "https://unpkg.com/micromodal@0.4.10/dist/micromodal.min.js",
             globalName: "MicroModal",
