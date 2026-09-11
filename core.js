@@ -5,7 +5,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 5;
+    const CORE_VERSION = 6;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -383,6 +383,11 @@
         preact: {
             src: "https://unpkg.com/preact@10.26.4/dist/preact.umd.js",
             globalName: "preact",
+        },
+        toastify: {
+            src: "https://cdn.jsdelivr.net/npm/toastify-js@1.12.0/src/toastify.min.js",
+            globalName: "Toastify",
+            styles: ["https://cdn.jsdelivr.net/npm/toastify-js@1.12.0/src/toastify.min.css"],
         },
         micromodal: {
             src: "https://unpkg.com/micromodal@0.4.10/dist/micromodal.min.js",
