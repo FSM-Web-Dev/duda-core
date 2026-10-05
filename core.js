@@ -498,19 +498,11 @@
         return promise;
     };
 
-    // Toasts are a page-wide surface. Keep one stylesheet and one class in Core
-    // so every widget inherits the same look instead of re-declaring it.
-    const ensureToastStyles = () => {
-        if (!global.document || global.document.querySelector("style[data-core-toast]")) return;
-        const style = global.document.createElement("style");
-        style.setAttribute("data-core-toast", "");
-        style.textContent = ".amp-toast{z-index:1004;padding:12px 16px;border:1px solid transparent;border-radius:7px;background:#b50a23;color:#fff;box-shadow:0 8px 24px rgb(9 28 50 / .28);font:inherit;font-weight:700}.amp-toast .toast-close{color:inherit}";
-        (global.document.head || global.document.documentElement).appendChild(style);
-    };
-
+    // Toasts are a page-wide surface: one shared class so every widget inherits
+    // the same look. The look itself is defined by the AMP Header widget's
+    // settings (its `.amp-toast` style controls), not by Core.
     const showToast = (text, options = {}) => {
         if (!text) return Promise.resolve(null);
-        ensureToastStyles();
         return loadDependency("toastify").then((Toastify) => {
             if (typeof Toastify !== "function") return null;
             return Toastify({
