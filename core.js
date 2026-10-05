@@ -5,7 +5,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 6;
+    const CORE_VERSION = 7;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -498,6 +498,38 @@
         return promise;
     };
 
+    // Toasts are a page-wide surface. Keep one stylesheet and one class in Core
+    // so every widget inherits the same look instead of re-declaring it.
+    const ensureToastStyles = () => {
+        if (!global.document || global.document.querySelector("style[data-core-toast]")) return;
+        const style = global.document.createElement("style");
+        style.setAttribute("data-core-toast", "");
+        style.textContent = ".amp-toast{z-index:1004;padding:12px 16px;border:1px solid transparent;border-radius:7px;background:#b50a23;color:#fff;box-shadow:0 8px 24px rgb(9 28 50 / .28);font:inherit;font-weight:700}.amp-toast .toast-close{color:inherit}";
+        (global.document.head || global.document.documentElement).appendChild(style);
+    };
+
+    const showToast = (text, options = {}) => {
+        if (!text) return Promise.resolve(null);
+        ensureToastStyles();
+        return loadDependency("toastify").then((Toastify) => {
+            if (typeof Toastify !== "function") return null;
+            return Toastify({
+                text,
+                duration: 4000,
+                gravity: "top",
+                position: "right",
+                stopOnFocus: true,
+                close: true,
+                ariaLive: "polite",
+                className: "amp-toast",
+                ...options,
+            })?.showToast();
+        }).catch((error) => {
+            console.error("[Core] toast:", error);
+            return null;
+        });
+    };
+
     const setLoading = (loaderElement, visible) => {
         if (!loaderElement) return false;
 
@@ -530,6 +562,7 @@
         ui: {
             setLoading,
         },
+        toast: showToast,
         Storage: {
             local: createStorage(() => global.localStorage),
             session: createStorage(() => global.sessionStorage),
