@@ -5,7 +5,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 7;
+    const CORE_VERSION = 8;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -537,6 +537,93 @@
         return true;
     };
 
+    // Floating Launchers (Waitlist, Food Ordering, …) each pin their fixed
+    // container to a viewport corner, so a page with more than one would stack
+    // them on top of each other. Widgets register their container here and Core
+    // assigns each a vertical offset within its corner, ordered by `order`
+    // (lower = nearest the corner). A widget that is alone keeps the corner's
+    // base offset, so nothing changes for single-launcher sites.
+    const FLOATING_BASE_OFFSET = 20;
+    const FLOATING_GAP = 12;
+    const floatingLaunchers = [];
+    let floatingSequence = 0;
+    let floatingLayoutQueued = false;
+
+    const normalizeCorner = (corner) => {
+        const normalized = String(corner || "").trim().toLowerCase();
+        return /^(top|bottom)-(left|right)$/.test(normalized) ? normalized : "bottom-right";
+    };
+
+    const removeFloatingLauncher = (entry) => {
+        const index = floatingLaunchers.indexOf(entry);
+        if (index !== -1) floatingLaunchers.splice(index, 1);
+        if (entry.resizeObserver) entry.resizeObserver.disconnect();
+        if (entry.element && entry.element.style) entry.element.style.removeProperty(entry.property);
+        queueFloatingLayout();
+    };
+
+    const layoutFloatingLaunchers = () => {
+        const corners = {};
+        floatingLaunchers.slice().forEach((entry) => {
+            if (!entry.element || !entry.element.isConnected) {
+                // Clean up inline; do not recurse back into layout.
+                const index = floatingLaunchers.indexOf(entry);
+                if (index !== -1) floatingLaunchers.splice(index, 1);
+                if (entry.resizeObserver) entry.resizeObserver.disconnect();
+                return;
+            }
+            (corners[entry.corner] = corners[entry.corner] || []).push(entry);
+        });
+
+        Object.keys(corners).forEach((corner) => {
+            const property = corner.indexOf("top") === 0 ? "top" : "bottom";
+            const ordered = corners[corner].sort((a, b) => {
+                return (a.order - b.order) || (a.sequence - b.sequence);
+            });
+
+            let offset = FLOATING_BASE_OFFSET;
+            ordered.forEach((entry) => {
+                entry.element.style.setProperty(property, offset + "px");
+                offset += entry.element.getBoundingClientRect().height + FLOATING_GAP;
+            });
+        });
+    };
+
+    const queueFloatingLayout = () => {
+        if (floatingLayoutQueued) return;
+        floatingLayoutQueued = true;
+        const run = () => {
+            floatingLayoutQueued = false;
+            layoutFloatingLaunchers();
+        };
+        if (typeof global.requestAnimationFrame === "function") global.requestAnimationFrame(run);
+        else global.setTimeout(run, 0);
+    };
+
+    const registerFloatingLauncher = (element, options = {}) => {
+        if (!element || !element.style) return () => {};
+        const corner = normalizeCorner(options.corner);
+        const entry = {
+            element,
+            corner,
+            order: Number(options.order) || 0,
+            property: corner.indexOf("top") === 0 ? "top" : "bottom",
+            sequence: floatingSequence++,
+            resizeObserver: null,
+        };
+
+        floatingLaunchers.push(entry);
+
+        // Launcher size can change after fonts load or the label is edited.
+        if (typeof global.ResizeObserver === "function") {
+            entry.resizeObserver = new global.ResizeObserver(queueFloatingLayout);
+            entry.resizeObserver.observe(element);
+        }
+
+        queueFloatingLayout();
+        return () => removeFloatingLauncher(entry);
+    };
+
     const Core = {
         ...existingCore,
         createStore,
@@ -553,6 +640,8 @@
         },
         ui: {
             setLoading,
+            registerFloatingLauncher,
+            refreshFloatingLaunchers: queueFloatingLayout,
         },
         toast: showToast,
         Storage: {
