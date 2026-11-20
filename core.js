@@ -5,7 +5,7 @@
 (function initializeCore(global) {
     "use strict";
 
-    const CORE_VERSION = 8;
+    const CORE_VERSION = 9;
 
     // A page can contain several widgets, each of which may import this classic
     // script. Do not recreate stateful helpers (especially the consent promise)
@@ -624,6 +624,173 @@
         return () => removeFloatingLauncher(entry);
     };
 
+    // AMP Direct Catalog
+    // Temporary escape hatch for the Welcomemat API adapter. When a widget's
+    // Duda settings enable direct mode, public catalog calls go straight to
+    // AMP. Authenticated account and checkout calls still use the adapter
+    // because they depend on its token, Stripe, and Salesforce integration.
+    const ampDirectCache = new Map();
+
+    const ampDirectEnabled = (config = {}) => {
+        const value = config.ampDirectEnabled;
+        const enabled = value === true || value === 1
+            || String(value).toLowerCase() === "true"
+            || String(value) === "1";
+
+        return enabled && Boolean(String(config.ampTenant || "").trim());
+    };
+
+    const ampDirectSettings = (config = {}) => ({
+        apiBaseUrl: String(config.ampApiBaseUrl || "https://api.ampmemberships.com").replace(/\/+$/, ""),
+        tenant: String(config.ampTenant || "").trim(),
+        accountId: config.ampAccountId || "USE-DEFAULT-ACCOUNT",
+        requestSourceId: String(config.ampRequestSourceId || "4"),
+        waitForTermly: config.waitForTermly,
+    });
+
+    const ampDirectFetch = async (settings, path, body = {}) => {
+        const response = await consentFetch(`${settings.apiBaseUrl}/${path}`, {
+            waitForTermly: settings.waitForTermly,
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Amp-Tenant": settings.tenant,
+                "Amp-Request-Source-Id": settings.requestSourceId,
+                "Amp-Account-Id": settings.accountId,
+            },
+            body: JSON.stringify(body),
+        });
+
+        if (!response.ok) {
+            throw new Error(`AMP direct ${path} failed with ${response.status}`);
+        }
+
+        return response.json();
+    };
+
+    const ampDirectLocation = (location = {}) => ({
+        id: location.external_id__c,
+        raw_id: location.id,
+        internal_name: location.internal_name__c || location.name || "",
+        street_address_line_1: location.street1__c || "",
+        street_address_line_2: location.street2__c || "",
+        city: String(location.city__c || "").trim(),
+        state: String(location.state__c || "").trim(),
+        zip_code: location.zip_code__c || "",
+        country_id: location.country_id,
+        phone_number: location.phone_number__c || "",
+        latitude: location.geolocation__latitude__s,
+        longitude: location.geolocation__longitude__s,
+        is_active: location.is_active !== false && location.coming_soon__c !== true,
+        price_group_id: location.price_group_id__c,
+        image_url: location.image_url__c || "",
+        location_hours: location.location_hours__c || "",
+    });
+
+    const ampDirectWashType = (washType = {}, index = 0) => ({
+        id: washType.external_id__c,
+        name: washType.display_name || washType.name || "",
+        display_name: washType.display_name || washType.name || "",
+        description: "",
+        price: Number(washType.price__c || 0),
+        audience: "User",
+        ordinal: index,
+        availableAddOns: [],
+    });
+
+    const ampDirectPromotion = (promotion = {}) => {
+        const detail = promotion.prepaidPromotionDetail || {};
+        const washPrices = (promotion.prepaidWashPromotionWashTypes || [])
+            .map((entry) => Number(entry.washType?.price__c || 0))
+            .filter((price) => price > 0);
+        // AMP prices a prepaid promotion per wash type. The catalog card shows
+        // the lowest eligible wash price until the buyer chooses a wash type.
+        const unitCents = washPrices.length ? Math.round(Math.min(...washPrices) * 100) : 0;
+        const quantity = Number(promotion.purchase_quantity || 1);
+
+        return {
+            id: promotion.id,
+            name: detail.name || "",
+            subtitle: detail.sub_title || "",
+            description: detail.description || "",
+            purchase_price_cents: unitCents * quantity,
+            promotion_tile_image_url: detail.tile_image_url || "",
+            promotion_detail_image_url: detail.detail_image_url || "",
+            ordinal: Number(detail.ordinal || 0),
+            purchase_quantity: quantity,
+            promotion_quantity: Number(promotion.promotion_quantity || 0),
+            price_group_id: (promotion.prepaidWashPromotionPriceGroups || [])[0]?.price_group_id,
+            wash_type_ids: (promotion.prepaidWashPromotionWashTypes || []).map((entry) => entry.washType?.external_id__c).filter(Boolean),
+            raw: promotion,
+        };
+    };
+
+    const ampDirectLocations = async (config = {}) => {
+        const settings = ampDirectSettings(config);
+        const key = `${settings.apiBaseUrl}|${settings.tenant}`;
+
+        if (!ampDirectCache.has(key)) {
+            const promise = ampDirectFetch(settings, "anonymous/autowash-locations/get-autowash-locations-for-mobile")
+                .then((rows) => (Array.isArray(rows) ? rows.map(ampDirectLocation) : []))
+                .catch((error) => {
+                    ampDirectCache.delete(key);
+                    throw error;
+                });
+
+            ampDirectCache.set(key, promise);
+        }
+
+        return ampDirectCache.get(key);
+    };
+
+    const ampDirectWashTypes = async (config = {}, locationId = "") => {
+        const settings = ampDirectSettings(config);
+        const locations = await ampDirectLocations(config);
+        const location = locations.find((entry) => String(entry.id) === String(locationId) || String(entry.raw_id) === String(locationId));
+
+        if (!location || location.price_group_id == null) {
+            throw new Error("AMP direct location or price group not found");
+        }
+
+        const rows = await ampDirectFetch(settings, "anonymous/prepaid-wash-promotions/get-wash-types", {
+            priceGroupId: location.price_group_id,
+        });
+
+        return (Array.isArray(rows) ? rows : []).map(ampDirectWashType);
+    };
+
+    const ampDirectGiftCards = async (config = {}, locationId = "") => {
+        const settings = ampDirectSettings(config);
+        const locations = await ampDirectLocations(config);
+        const location = locations.find((entry) => String(entry.id) === String(locationId) || String(entry.raw_id) === String(locationId));
+        const rows = await ampDirectFetch(settings, "anonymous/prepaid-wash-promotions/get", {
+            locationId: location?.id || locationId,
+        });
+
+        return (Array.isArray(rows) ? rows : []).map(ampDirectPromotion);
+    };
+
+    const ampDirectCatalog = async (config = {}, type = "", locationId = "") => {
+        if (type === "single-wash") return ampDirectWashTypes(config, locationId);
+        if (type === "gift-card") return ampDirectGiftCards(config, locationId);
+        // Unlimited plans are not exposed by the public AMP endpoints yet.
+        // Returning null tells the widget to render an empty category instead
+        // of falling back to the broken api.welcomemat.com adapter.
+        return null;
+    };
+
+    const ampDirect = {
+        isEnabled: ampDirectEnabled,
+        settings: ampDirectSettings,
+        locations: ampDirectLocations,
+        washTypes: ampDirectWashTypes,
+        giftCards: ampDirectGiftCards,
+        catalog: ampDirectCatalog,
+        reset() {
+            ampDirectCache.clear();
+        },
+    };
+
     const Core = {
         ...existingCore,
         createStore,
@@ -654,6 +821,7 @@
             fetch: consentFetch,
             hasCategory: hasConsentCategory,
         },
+        amp: ampDirect,
         html: {
             escape: escapeHtml,
             sanitizeRich,
